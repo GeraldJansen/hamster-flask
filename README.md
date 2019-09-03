@@ -1,10 +1,10 @@
 # hamster-flask
 
-Cloned from  https://github.com/projecthamster/flask-hamster.
+Cloned from  https://github.com/projecthamster/flask-hamster on 2019-09-02.
 
-Experimental hamster flask app. Right now it's super rough and can only list your current activites.
-Toma Bauģis started the original project "merely to pick up flask and advanced javascript, but the general 
-direction makes sense, methinks!"
+Experimental hamster flask app. Right now it's super rough and can only list your current activites and start new activities. Toma Bauģis started the original project "merely to pick up flask and advanced javascript, but the general direction makes sense, methinks!"
+
+This version works again with python3 and python3-flask.
 
 ## Installing
 

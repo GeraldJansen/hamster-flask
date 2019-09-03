@@ -1,6 +1,10 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # - coding: utf-8 -
 # Copyright (C) 2012-2013 Toms Bauģis <toms.baugis at gmail.com>
+# Copyright (C) 2019 Gerald Jansen <gjansen at ownmail.net>
+
+import os
+import time
 import datetime as dt
 import itertools
 from operator import itemgetter
@@ -11,8 +15,7 @@ from flask import request, session, redirect, url_for, abort, render_template
 from flask import Flask
 
 from hamster import db
-from hamster import lib as hamster_lib
-import os
+import hamster.lib as hamster_lib
 
 events = []
 # todo - unhardcode in some magic way
@@ -20,12 +23,9 @@ class StorageWithEvents(db.Storage):
     def facts_changed(self):
         events.append("hello")
 
-client = StorageWithEvents(database_dir=os.path.expanduser("~/.local/share/hamster-applet/"))
-
-
+client = StorageWithEvents()
 
 app = flask.Flask(__name__)
-import time
 
 def _days_ago(days):
     return (dt.datetime.now() - dt.timedelta(days=days)).date()
@@ -160,6 +160,7 @@ def today():
 
 
 if __name__ == "__main__":
-    #app.debug = True
-    print "Pretty sure i'm running on http://127.0.0.1:5000"
+    app.debug = True
+    app.env = "Development"
+    print("Now running on http://127.0.0.1:5000")
     app.run()

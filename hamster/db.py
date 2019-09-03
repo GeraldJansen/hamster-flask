@@ -20,39 +20,29 @@
 
 
 """separate file for database operations"""
+
 import logging
+logger = logging.getLogger(__name__)   # noqa: E402
 
-try:
-    import sqlite3 as sqlite
-except ImportError:
-    try:
-        logging.warn("Using sqlite2")
-        from pysqlite2 import dbapi2 as sqlite
-    except ImportError:
-        logging.error("Neither sqlite3 nor pysqlite2 found")
-        raise
-
+import sqlite3 as sqlite
 import os, time
 import datetime
-import storage
 from shutil import copy as copyfile
 import itertools
 import datetime as dt
+from math import floor
 try:
-    import gio
+    from gi.repository import Gio as gio
 except ImportError:
-    print "Could not import gio - requires pygobject. File monitoring will be disabled"
+    print("Could not import gio. File monitoring will be disabled")
     gio = None
+import hamster.storage as storage
+from hamster.lib import Fact
 
-from lib import Fact
-try:
-    from lib import trophies
-except:
-    trophies = None
 
 class Storage(storage.Storage):
     con = None # Connection will be created on demand
-    def __init__(self, unsorted_localized="Unsorted", database_dir=None):
+    def __init__(self, unsorted_localized="Unsorted", db_dir=None):
         """
         XXX - you have to pass in name for the uncategorized category
         Delayed setup so we don't do everything at the same time
@@ -66,80 +56,54 @@ class Storage(storage.Storage):
         self.__last_etag = None
 
 
-        self.db_path = self.__init_db_file(database_dir)
+        self.db_path = self.__init_db_file(db_dir)
 
         if gio:
             # add file monitoring so the app does not have to be restarted
             # when db file is rewritten
             def on_db_file_change(monitor, gio_file, event_uri, event):
-                if event == gio.FILE_MONITOR_EVENT_CHANGES_DONE_HINT:
-                    if gio_file.query_info(gio.FILE_ATTRIBUTE_ETAG_VALUE).get_etag() == self.__last_etag:
+                logger.debug(event)
+                if event == gio.FileMonitorEvent.CHANGES_DONE_HINT:
+                    if gio_file.query_info(gio.FILE_ATTRIBUTE_ETAG_VALUE,
+                                           gio.FileQueryInfoFlags.NONE,
+                                           None).get_etag() == self.__last_etag:
                         # ours
                         return
-                elif event == gio.FILE_MONITOR_EVENT_CREATED:
-                    # treat case when instead of a move, a remove and create has been performed
+                elif event == gio.FileMonitorEvent.DELEATED:
                     self.con = None
 
-                if event in (gio.FILE_MONITOR_EVENT_CHANGES_DONE_HINT, gio.FILE_MONITOR_EVENT_CREATED):
-                    print "DB file has been modified externally. Calling all stations"
+                if event in (gio.FileMonitorEvent.CHANGES_DONE_HINT):
+                    print("DB file has been modified externally. Calling all stations")
                     self.dispatch_overwrite()
 
                     # plan "b" – synchronize the time tracker's database from external source while the tracker is running
-                    if trophies:
-                        trophies.unlock("plan_b")
 
 
-            self.__database_file = gio.File(self.db_path)
-            self.__db_monitor = self.__database_file.monitor_file()
+            self.__database_file = gio.File.new_for_path(self.db_path)
+            self.__db_monitor = self.__database_file.monitor_file(gio.FileMonitorFlags.WATCH_MOUNTS, None)
             self.__db_monitor.connect("changed", on_db_file_change)
 
         self.run_fixtures()
 
-    def __init_db_file(self, database_dir):
-        if not database_dir:
-            try:
-                from xdg.BaseDirectory import xdg_data_home
-                database_dir = os.path.realpath(os.path.join(xdg_data_home, "hamster-applet"))
-            except ImportError:
-                print "Could not import xdg - will store hamster.db in home folder"
-                database_dir = os.path.realpath(os.path.expanduser("~"))
+    def __init_db_file(self, db_dir):
+        if not db_dir:
+            db_dir = os.path.join('~', '.config', 'hamster-flask')
+        db_dir = os.path.realpath(os.path.expanduser(db_dir))
+        if not os.path.exists(db_dir):
+            os.makedirs(db_dir)
+        db_path = os.path.join(db_dir, "hamster.db")
 
-        if not os.path.exists(database_dir):
-            os.makedirs(database_dir, 0744)
-
-        # handle the move to xdg_data_home
-        old_db_file = os.path.expanduser("~/.gnome2/hamster-applet/hamster.db")
-        new_db_file = os.path.join(database_dir, "hamster.db")
-        if os.path.exists(old_db_file):
-            if os.path.exists(new_db_file):
-                logging.info("Have two database %s and %s" % (new_db_file, old_db_file))
-            else:
-                os.rename(old_db_file, new_db_file)
-
-        db_path = os.path.join(database_dir, "hamster.db")
-
-        # check if we have a database at all
+        # check if we have a database, else install default DB
         if not os.path.exists(db_path):
-            # if not there, copy from the defaults
-            try:
-                import defs
-                data_dir = os.path.join(defs.DATA_DIR, "hamster-time-tracker")
-            except:
-                # if defs is not there, we are running from sources
-                module_dir = os.path.dirname(os.path.realpath(__file__))
-                if os.path.exists(os.path.join(module_dir, "data")):
-                    # running as flask app. XXX - detangle
-                    data_dir = os.path.join(module_dir, "data")
-                else:
-                    data_dir = os.path.join(module_dir, '..', '..', 'data')
-
-            data_dir = os.path.realpath(data_dir)
-
-            logging.info("Database not found in %s - installing default from %s!" % (db_path, data_dir))
+            module_dir = os.path.dirname(os.path.realpath(__file__))
+            data_dir = os.path.join(module_dir, "data")
+            logging.info("Installing default DB from %s in %s!"
+                         % (data_dir, db_path))
             copyfile(os.path.join(data_dir, 'hamster.db'), db_path)
 
             #change also permissions - sometimes they are 444
-            os.chmod(db_path, 0664)
+            os.chmod(db_dir, 0o770)
+            os.chmod(db_path, 0o660)
 
         return db_path
 
@@ -148,7 +112,9 @@ class Storage(storage.Storage):
         if gio:
             # db.execute calls this so we know that we were the ones
             # that modified the DB and no extra refesh is not needed
-            self.__last_etag = self.__database_file.query_info(gio.FILE_ATTRIBUTE_ETAG_VALUE).get_etag()
+            self.__last_etag = self.__database_file.query_info(gio.FILE_ATTRIBUTE_ETAG_VALUE,
+                                                               gio.FileQueryInfoFlags.NONE,
+                                                               None).get_etag()
 
     #tags, here we come!
     def __get_tags(self, only_autocomplete = False):
@@ -500,9 +466,6 @@ class Storage(storage.Storage):
                                       WHERE fact_id = ?"""
                 self.execute(tag_update, (new_fact_id, fact["id"])) #clone tags
 
-                if trophies:
-                    trophies.unlock("split")
-
             # overlap start
             elif start_time < fact["start_time"] < end_time:
                 logging.info("Overlapping start of %s" % fact["name"])
@@ -537,9 +500,6 @@ class Storage(storage.Storage):
             category_id = self.__get_category_id(fact.category)
             if not category_id:
                 category_id = self.__add_category(fact.category)
-
-                if trophies:
-                    trophies.unlock("no_hands")
 
         # try to find activity, resurrect if not temporary
         activity_id = self.__get_activity_by_name(fact.activity,
@@ -631,9 +591,9 @@ class Storage(storage.Storage):
         try:
             from configuration import conf
             day_start = conf.get("day_start_minutes")
+            day_start = dt.time(floor(day_start / 60), int(day_start) % 60)
         except:
-            day_start = 5 * 60 # default day start to 5am
-        day_start = dt.time(day_start / 60, day_start % 60)
+            day_start = dt.time(5, 0) # default day start to 5am
         today = (dt.datetime.now() - dt.timedelta(hours = day_start.hour,
                                                   minutes = day_start.minute)).date()
         return self.__get_facts(today)
@@ -643,9 +603,9 @@ class Storage(storage.Storage):
         try:
             from configuration import conf
             day_start = conf.get("day_start_minutes")
+            day_start = dt.time(floor(day_start) / 60, int(day_start) % 60)
         except:
-            day_start = 5 * 60 # default day start to 5am
-        day_start = dt.time(day_start / 60, day_start % 60)
+            day_start = dt.time(5, 0) # default day start to 5am
 
         split_time = day_start
         datetime_from = dt.datetime.combine(date, split_time)
@@ -776,6 +736,7 @@ class Storage(storage.Storage):
 
         return activities
 
+
     def __remove_activity(self, id):
         """ check if we have any facts with this activity and behave accordingly
             if there are facts - sets activity to deleted = True
@@ -789,9 +750,6 @@ class Storage(storage.Storage):
         else:
             self.execute("delete from activities where id = ?", (id,))
 
-        # Finished! - deleted an activity with more than 50 facts on it
-        if trophies and bound_facts >= 50:
-            trophies.unlock("finished")
 
     def __remove_category(self, id):
         """move all activities to unsorted and remove category"""
@@ -888,8 +846,16 @@ class Storage(storage.Storage):
 
     connection = property(get_connection, None)
 
+    def get_new_connection(self):
+        con = sqlite.connect(self.db_path, detect_types=sqlite.PARSE_DECLTYPES\
+                                                       |sqlite.PARSE_COLNAMES)
+        con.row_factory = sqlite.Row
+
+        return con
+
     def fetchall(self, query, params = None):
-        con = self.connection
+        # con = self.connection
+        con = self.get_new_connection()
         cur = con.cursor()
 
         logging.debug("%s %s" % (query, params))
@@ -916,7 +882,8 @@ class Storage(storage.Storage):
         execute sql statement. optionally you can give multiple statements
         to save on cursor creation and closure
         """
-        con = self.__con or self.connection
+        #con = self.__con or self.connection
+        con = self.get_new_connection()
         cur = self.__cur or con.cursor()
 
         if isinstance(statement, list) == False: # we expect to receive instructions in list
@@ -933,7 +900,8 @@ class Storage(storage.Storage):
             self.register_modification()
 
     def executemany(self, statement, params = []):
-        con = self.__con or self.connection
+        #con = self.__con or self.connection
+        con = self.get_new_connection()
         cur = self.__cur or con.cursor()
 
         logging.debug("%s %s" % (statement, params))
@@ -943,7 +911,6 @@ class Storage(storage.Storage):
             con.commit()
             cur.close()
             self.register_modification()
-
 
 
     def start_transaction(self):
@@ -958,7 +925,7 @@ class Storage(storage.Storage):
         self.register_modification()
 
     def run_fixtures(self):
-        self.start_transaction()
+        #self.start_transaction()
 
         """upgrade DB to hamster version"""
         version = self.fetchone("SELECT version FROM version")["version"]
@@ -991,10 +958,6 @@ class Storage(storage.Storage):
         if version < current_version:
             #lock down current version
             self.execute("UPDATE version SET version = %d" % current_version)
-            print "updated database from version %d to %d" % (version, current_version)
+            print("updated database from version %d to %d" % (version, current_version))
 
-            # oldtimer – database version structure had been performed on startup (thus we know that user has been on at least 2 versions)
-            if trophies:
-                trophies.unlock("oldtimer")
-
-        self.end_transaction()
+        #self.end_transaction()
